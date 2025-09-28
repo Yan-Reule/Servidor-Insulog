@@ -1,7 +1,6 @@
 const express = require('express');
 const mysql = require('mysql2');
 const cors = require('cors');
-const bcrypt = require('bcrypt');
 
 
 
@@ -133,14 +132,13 @@ app.get('/Consultas/glicose/mediaPorFaixaEtaria', (req, res) => {
   const sql = `
     SELECT 
       CASE 
-        WHEN TIMESTAMPDIFF(YEAR, u.data_nascimento, CURDATE()) BETWEEN 0 AND 18 THEN '0-18 anos'
-        WHEN TIMESTAMPDIFF(YEAR, u.data_nascimento, CURDATE()) BETWEEN 19 AND 35 THEN '19-35 anos'
-        WHEN TIMESTAMPDIFF(YEAR, u.data_nascimento, CURDATE()) BETWEEN 36 AND 60 THEN '36-60 anos'
+        WHEN TIMESTAMPDIFF(YEAR, CURDATE(), CURDATE()) BETWEEN 0 AND 18 THEN '0-18 anos'
+        WHEN TIMESTAMPDIFF(YEAR, CURDATE(), CURDATE()) BETWEEN 19 AND 35 THEN '19-35 anos'
+        WHEN TIMESTAMPDIFF(YEAR, CURDATE(), CURDATE()) BETWEEN 36 AND 60 THEN '36-60 anos'
         ELSE '60+ anos'
       END AS faixa_etaria,
       AVG(rg.nivel_glicose) AS media_glicose
-    FROM usuario u
-    JOIN registroglicose rg ON u.id_usuario = rg.id_usuario
+    FROM registroglicose rg
     GROUP BY faixa_etaria
   `;
   connection.query(sql, (err, results) => {
@@ -254,8 +252,7 @@ app.post('/login', (req, res) => {
 
   // Busca o médico pelo e-mail
   const sql = 'SELECT id_usuario, nome, senha FROM medico WHERE email = ?';
-  connection.query(sql, [email], (err, results) => { // Removido o 'async' daqui
-
+  connection.query(sql, [email], (err, results) => {
     if (err) {
       console.error('Erro no banco ao buscar médico:', err);
       return res.status(500).json({ message: 'Erro interno' });
@@ -266,9 +263,8 @@ app.post('/login', (req, res) => {
 
     const { id_usuario, nome, senha: senhaSalva } = results[0];
 
-    // Compara a senha fornecida com a senha salva (sem hash!)
-    // >>>>>> ALTERADO AQUI <<<<<<
-    const senhaValida = (senha === senhaSalva); // Comparação direta!
+    // Comparação direta da senha
+    const senhaValida = senha === senhaSalva;
 
     if (!senhaValida) {
       return res.status(401).json({ message: 'Credenciais inválidas' });
@@ -360,7 +356,7 @@ app.get('/Paciente/medico/:id_medico', (req, res) => {
 });
 
 // Rota para cadastrar um paciente
-app.post('/Paciente', async (req, res) => {
+app.post('/Paciente', (req, res) => {
   const {
     nome_completo,
     email,
@@ -372,47 +368,38 @@ app.post('/Paciente', async (req, res) => {
     id_medico
   } = req.body;
 
-  // 1) Validação básica
-  if (
-     !nome_completo ||
-    !email ||
-    !cpf ||
-    !senha ||
-    !id_medico
-  ) {
+  if (!nome_completo || !email || !cpf || !senha || !id_medico) {
     return res.status(400).json({
       message: 'Faltam dados obrigatórios (nome, email, cpf, senha e id_medico).'
     });
   }
 
   try {
-    // >>>>>> REMOVIDA A GERAÇÃO DE HASH <<<<<<
-    // const senhaHash = await bcrypt.hash(senha, 10);
     const senhaSalva = senha; // Usa a senha como texto puro
 
-    // 3) Cria o usuário na tabela `usuario`
     const sqlUser = `
-      INSERT INTO usuario
-        (nome, email, senha, tipo_usuario)
-      VALUES
-        (?,    ?,     ?,     ?)
-    `;
+      INSERT INTO usuario
+        (nome, email, senha, tipo_usuario)
+      VALUES
+        (?, ?, ?, ?)
+    `;
     connection.query(
       sqlUser,
-      [nome_completo, email, senhaSalva, 'paciente'], // Usando senhaSalva
+      [nome_completo, email, senhaSalva, 'paciente'],
       (errUser, userResult) => {
-        // ... código de erro ...
+        if (errUser) {
+          console.error('Erro ao criar usuário:', errUser);
+          return res.status(500).json({ message: 'Erro ao criar usuário' });
+        }
         const newUserId = userResult.insertId;
 
-        // 4) Em seguida, insere o paciente usando esse mesmo id_usuario
         const sqlPac = `
-          INSERT INTO paciente
-            (id_usuario, id_medico, email, nome_completo,
-             cpf,        celular,   senha, plano_saude, numero_prontuario)
-          VALUES
-            (?,          ?,         ?,     ?,
-             ?,          ?,         ?,     ?,            ?)
-        `;
+          INSERT INTO paciente
+            (id_usuario, id_medico, email, nome_completo,
+             cpf, celular, senha, plano_saude, numero_prontuario)
+          VALUES
+            (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `;
         connection.query(
           sqlPac,
           [
@@ -422,12 +409,19 @@ app.post('/Paciente', async (req, res) => {
             nome_completo,
             cpf,
             celular || null,
-            senhaSalva, // Usando senhaSalva
+            senhaSalva,
             plano_saude || null,
             numero_prontuario || null
           ],
           errPac => {
-            // ... código de erro e sucesso ...
+            if (errPac) {
+              console.error('Erro ao criar paciente:', errPac);
+              return res.status(500).json({ message: 'Erro ao criar paciente' });
+            }
+            res.status(201).json({
+              message: 'Paciente cadastrado com sucesso',
+              id: newUserId
+            });
           }
         );
       }
@@ -439,24 +433,22 @@ app.post('/Paciente', async (req, res) => {
 });
 
 // Rota para cadastrar um médico
-app.post('/Medico', (req, res) => { // Removido o 'async'
+app.post('/Medico', (req, res) => {
   const { nome, email, senha, crm, tipo_usuario } = req.body;
   if (!nome || !email || !senha || !crm) {
     return res.status(400).json({ message: 'Faltam dados obrigatórios' });
   }
 
   try {
-    // >>>>>> REMOVIDA A GERAÇÃO DE HASH <<<<<<
     const senhaSalva = senha; // Usa a senha como texto puro
 
-    // 1) Cria registro em USUARIO
     const sqlUser = `
       INSERT INTO usuario (nome, email, senha, tipo_usuario)
       VALUES (?, ?, ?, ?)
     `;
     connection.query(
       sqlUser,
-      [nome, email, senhaSalva, tipo_usuario], // Usando senhaSalva
+      [nome, email, senhaSalva, tipo_usuario],
       (errUser, userResult) => {
         if (errUser) {
           console.error('Erro ao criar usuário:', errUser);
@@ -464,14 +456,13 @@ app.post('/Medico', (req, res) => { // Removido o 'async'
         }
         const newUserId = userResult.insertId;
 
-        // 2) Cria registro em MEDICO usando o mesmo id_usuario
         const sqlMed = `
           INSERT INTO medico (id_usuario, nome, email, senha, crm)
           VALUES (?, ?, ?, ?, ?)
         `;
         connection.query(
           sqlMed,
-          [newUserId, nome, email, senhaSalva, crm], // Usando senhaSalva
+          [newUserId, nome, email, senhaSalva, crm],
           errMed => {
             if (errMed) {
               console.error('Erro ao criar médico:', errMed);
